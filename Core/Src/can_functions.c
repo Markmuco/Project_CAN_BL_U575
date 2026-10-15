@@ -313,6 +313,7 @@ static void can_100_procedure(const can_trx_t *msg)
 	{
 		if (compare_serial(msg->data) && communication)
 		{
+			stm32_flash_flush();
 			tty_puts("Start App\r\n");
 			buff[0] = 0;
 			can_send_msg(ID_FL_RESULT, 4, buff);
@@ -356,6 +357,7 @@ static void can_100_procedure(const can_trx_t *msg)
 
 		if (compare_serial(msg->data) && communication)
 		{
+			stm32_flash_flush();	// write last partial quad-word
 			tty_puts("CAN check CRC\r\n");
 			crc_verify_flash(&app_info, FLASH_APP_START_ADDR, APP_SIZE);
 

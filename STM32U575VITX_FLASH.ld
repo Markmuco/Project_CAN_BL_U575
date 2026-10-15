@@ -42,11 +42,15 @@ _sstack = _estack - _Min_Stack_Size;
 _Min_Heap_Size = 0x200;	/* required amount of heap  */
 _Min_Stack_Size = 0x2400;	/* required amount of stack */
 
+/* Application: app_info header at 0x08010000, vector table (1Kb aligned for VTOR) behind it */
+_main_app_start_address = 0x08010400;
+
 /* Memories definition */
 MEMORY
 {
   RAM	(xrw)	: ORIGIN = 0x20000010,	LENGTH = 768K - 0x010
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
+  BKPSRAM	(rw)	: ORIGIN = 0x40036400,	LENGTH = 2K	/* backup SRAM of the application (graph history): bootloader never uses or clears it */
   FLASH	(rx)	: ORIGIN = 0x08000000,	LENGTH =  64K
   MYSEC (xrw)    : ORIGIN = 0x08010000-48, LENGTH = 48
 }
@@ -160,6 +164,16 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
+
+  /* Backup SRAM is reserved for the application. Nothing of the bootloader is placed here and the
+     startup code does not clear it (only .bss in RAM), so the content survives the bootloader. */
+  .bkpsram_noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.bkpsram_noinit)
+    *(.bkpsram_noinit*)
+    . = ALIGN(4);
+  } >BKPSRAM
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :

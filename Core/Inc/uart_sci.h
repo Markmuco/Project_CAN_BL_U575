@@ -60,8 +60,8 @@
 #define SCI_CFG_USB_RX_BUFSIZ_ORDER	    (BUFFER_2048)
 #define SCI_CFG_USB_TX_BUFSIZ_ORDER 	(BUFFER_1024)
 
-#define	FLEXIBLE_SCI1				(1) // direct tty_xx to flexible port or fix it below
-#define	FLEXIBLE_SCI2				(1) // direct tty_xx to flexible port or fix it below
+#define	FLEXIBLE_SCI1				(0) // direct tty_xx to flexible port or fix it below
+#define	FLEXIBLE_SCI2				(0) // direct tty_xx to flexible port or fix it below
 #define	FLEXIBLE_SCI3				(0) // direct tty_xx to flexible port or fix it below
 #define	FLEXIBLE_SCI4				(0) // direct tty_xx to flexible port or fix it below
 #define	FLEXIBLE_SCI5				(0) // direct tty_xx to flexible port or fix it below

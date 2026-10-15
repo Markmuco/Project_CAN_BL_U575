@@ -4,6 +4,7 @@
  *  Created on: 24 jan. 2026
  *      Author: Mark Ursum
  *
+ *  STM32U575 (2Mb, dual bank, 8Kb pages, quad-word (128 bit) programming)
  */
 
 #include "main.h"
@@ -14,38 +15,37 @@
 #include "iwdg.h"
 #include "n25lpxx.h"
 
-static FLASH_EraseInitTypeDef EraseInitStruct;
+/* Staging buffer: STM32U5 flash is programmed per quad-word (128 bit) and a quad-word can only
+ * be programmed once. Writes smaller than 16 bytes (CAN: 8 bytes) are collected here. */
+static uint32_t qw_base = 0xFFFFFFFFU;		// address of the pending quad-word
+static uint8_t qw_buf[FLASH_QUADWORD_SIZE] __attribute__((aligned(4)));
+static bool qw_dirty = false;
 
-static uint32_t GetSector(uint32_t Addr);
-
+static bool program_quadword(uint32_t address, const uint8_t *p_qw);
 
 /*!
- * \brief Erase the application memory.
+ * \brief Erase flash page by page (8Kb pages, both banks).
  *
- * \param -
+ * \param start   Start address, inside a page.
+ * \param size    Number of bytes to erase.
  *
  * \return HAL_StatusTypeDef
  */
 HAL_StatusTypeDef stm32_flash_erase(uint32_t start, uint32_t size)
 {
-	uint32_t FirstSector = 0, NbOfSectors = 0;
-	uint32_t SectorError = 0;
-	uint32_t BankNumber = 0;
+	FLASH_EraseInitTypeDef erase;
+	uint32_t page_error = 0;
+	HAL_StatusTypeDef st = HAL_OK;
 
-	/* Get the 1st sector to erase */
-	FirstSector = GetSector(start);
+	if (size == 0)
+		return HAL_OK;
 
-	/* Get the number of sectors to erase from 1st sector */
-	NbOfSectors = GetSector(start + size - 1U) - FirstSector + 1U;
+	qw_dirty = false;
+	qw_base = 0xFFFFFFFFU;
 
-	/* Get the bank */
-	BankNumber = FLASH_BANK_1; // FLASH_BANK_BOTH
-
-	/* Fill EraseInit structure*/
-	EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
-	EraseInitStruct.Banks = BankNumber;
-	EraseInitStruct.Sector = FirstSector;
-	EraseInitStruct.NbSectors = NbOfSectors;
+	uint32_t first = (start - FLASH_BASE) / FLASH_PAGE_SIZE;				// absolute page 0..255
+	uint32_t last = (start + size - 1U - FLASH_BASE) / FLASH_PAGE_SIZE;
+	uint32_t pages_per_bank = FLASH_BANK_SIZE / FLASH_PAGE_SIZE;
 
 	/* Disable instruction cache prior to internal cacheable memory update */
 	if (HAL_ICACHE_Disable() != HAL_OK)
@@ -53,21 +53,18 @@ HAL_StatusTypeDef stm32_flash_erase(uint32_t start, uint32_t size)
 
 	HAL_FLASH_Unlock();
 
-	FLASH_WaitForLastOperation(0xFFFF);
-
-	/* Note: If an erase operation in Flash memory also concerns data in the data or instruction cache,
-	 you have to make sure that these data are rewritten before they are accessed during code
-	 execution. If this cannot be done safely, it is recommended to flush the caches by setting the
-	 DCRST and ICRST bits in the FLASH_CR register. */
-	if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) != HAL_OK)
+	for (uint32_t pg = first; pg <= last; pg++)
 	{
-		/*
-		 Error occurred while sector erase.
-		 User can add here some code to deal with this error.
-		 SectorError will contain the faulty sector and then to know the code error on this sector,
-		 user can call function 'HAL_FLASH_GetError()'
-		 */
-		return (HAL_ERROR);
+		wdt_clr();
+
+		erase.TypeErase = FLASH_TYPEERASE_PAGES;
+		erase.Banks = (pg < pages_per_bank) ? FLASH_BANK_1 : FLASH_BANK_2;
+		erase.Page = pg % pages_per_bank;
+		erase.NbPages = 1;
+
+		st = HAL_FLASHEx_Erase(&erase, &page_error);
+		if (st != HAL_OK)
+			break;
 	}
 
 	HAL_FLASH_Lock();
@@ -76,52 +73,26 @@ HAL_StatusTypeDef stm32_flash_erase(uint32_t start, uint32_t size)
 	if (HAL_ICACHE_Enable() != HAL_OK)
 		Error_Handler();
 
-	return HAL_OK;
+	return st;
 }
 
 /*!
- * \brief Write data to the application memory.
- *
- * \param address   Start address of write.
- * \param p_data   Pointer to data to write.
- * \param size   Size of data to write.
- *
- * \return - true on successful
- *
- * \note The flash memory must be erased before it can be written.
+ * \brief Program one complete quad-word (16 bytes) at a 16 byte aligned address.
  */
-bool stm32_flash_write(uint32_t address, const uint8_t *p_data, uint32_t size)
+static bool program_quadword(uint32_t address, const uint8_t *p_qw)
 {
-	HAL_StatusTypeDef st = HAL_OK;
-	uint8_t temp[16] =
-	{ 0 };
-
-	if ((address & 0xF) != 0)
-		return false;
-	if (size == 0)
-		return true;
+	HAL_StatusTypeDef st;
 
 	if (HAL_ICACHE_Disable() != HAL_OK)
 		Error_Handler();
+
 	if (HAL_FLASH_Unlock() != HAL_OK)
-		return false;
-
-	FLASH_WaitForLastOperation(0xFFFF);
-
-	while (size > 0)
 	{
-		uint32_t chunk = (size >= 16U) ? 16U : size;
-		memset(temp, 0xFF, sizeof(temp));   // of 0x00, afhankelijk van protocol
-		memcpy(temp, p_data, chunk);
-
-		st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, address, (uint32_t) temp);
-		if (st != HAL_OK)
-			break;
-
-		address += 16U;
-		p_data += chunk;
-		size -= chunk;
+		HAL_ICACHE_Enable();
+		return false;
 	}
+
+	st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, address, (uint32_t) p_qw);
 
 	HAL_FLASH_Lock();
 
@@ -131,27 +102,78 @@ bool stm32_flash_write(uint32_t address, const uint8_t *p_data, uint32_t size)
 	return (st == HAL_OK);
 }
 
-/**
- * @brief  Gets the sector of a given address
- * @param  Addr: Address of the FLASH Memory
- * @retval The sector of a given address
+/*!
+ * \brief Write the pending (partly filled) quad-word, padded with 0xFF.
+ *
+ * \return - true on successful
  */
-static uint32_t GetSector(uint32_t Addr)
+bool stm32_flash_flush(void)
 {
-	uint32_t sector = 0;
+	bool ok = true;
 
-	if (Addr < (FLASH_BASE + FLASH_BANK_SIZE))
+	if (qw_dirty)
 	{
-		/* Bank 1 */
-		sector = (Addr - FLASH_BASE) / FLASH_SECTOR_SIZE;
+		ok = program_quadword(qw_base, qw_buf);
+		qw_dirty = false;
+		qw_base = 0xFFFFFFFFU;
 	}
-	else
+	return ok;
+}
+
+/*!
+ * \brief Write data to the application memory.
+ *
+ * \param address   Start address of write (multiple of 8, or contiguous with the previous write).
+ * \param p_data   Pointer to data to write.
+ * \param size   Size of data to write.
+ *
+ * \return - true on successful
+ *
+ * \note The flash memory must be erased before it can be written.
+ * \note Data that does not fill a complete quad-word stays pending until the next
+ *       contiguous write or stm32_flash_flush().
+ */
+bool stm32_flash_write(uint32_t address, const uint8_t *p_data, uint32_t size)
+{
+	if ((address & 0x7) != 0)
+		return false;
+
+	while (size > 0)
 	{
-		/* Bank 2 */
-		sector = (Addr - (FLASH_BASE + FLASH_BANK_SIZE)) / FLASH_SECTOR_SIZE;
+		uint32_t base = address & ~(FLASH_QUADWORD_SIZE - 1U);
+		uint32_t offs = address - base;
+
+		/* Pending quad-word belongs to another address: write it first */
+		if (qw_dirty && qw_base != base)
+		{
+			if (!stm32_flash_flush())
+				return false;
+		}
+		if (!qw_dirty)
+		{
+			memset(qw_buf, 0xFF, sizeof(qw_buf));
+			qw_base = base;
+		}
+
+		uint32_t chunk = FLASH_QUADWORD_SIZE - offs;
+		if (chunk > size)
+			chunk = size;
+		memcpy(&qw_buf[offs], p_data, chunk);
+		qw_dirty = true;
+
+		/* Quad-word complete */
+		if (offs + chunk == FLASH_QUADWORD_SIZE)
+		{
+			if (!stm32_flash_flush())
+				return false;
+		}
+
+		address += chunk;
+		p_data += chunk;
+		size -= chunk;
 	}
 
-	return sector;
+	return true;
 }
 
 /*!
@@ -170,7 +192,6 @@ bool stm32_ymodem_flash_write(void *p_args)
 	// Cast p_args back to a ym_data_t struct
 	ym_data = *((ym_data_t*) p_args);
 
-	// Perform flash write
-	return (stm32_flash_write(ym_data.addr, ym_data.p_buf, ym_data.len));
+	// Ymodem blocks are separate transfers: do not keep a partial quad-word pending
+	return (stm32_flash_write(ym_data.addr, ym_data.p_buf, ym_data.len) && stm32_flash_flush());
 }
-

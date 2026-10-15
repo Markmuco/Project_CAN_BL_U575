@@ -91,10 +91,8 @@
  - Optimize more (-O2)
 
  NOTES
- CPU freq 			200Mhz
+ CPU freq 			160Mhz
  Uart1 COM port		115K
- Uart2 RS485		921600
- SPI1 Flash 2Mb 	12.5MBit
  IWDT 40khz/4095/16 4.096 sec
 
  TOOLS
