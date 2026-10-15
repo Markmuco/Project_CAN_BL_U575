@@ -1,0 +1,63 @@
+# Eclipse settings
+.settings/
+
+# Build directories
+build/
+Debug/
+Release/
+
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Executables
+*.bin
+*.out
+*.hex
+
+# but do NOT ignore these files!
+!Middlewares/
+Middlewares/*
+!Middlewares/ST/
+Middlewares/ST/*
+!Middlewares/ST/touchgfx/
+Middlewares/ST/touchgfx/*
+!Middlewares/ST/touchgfx/framework/
+Middlewares/ST/touchgfx/framework/*
+!Middlewares/ST/touchgfx/framework/tools/
+Middlewares/ST/touchgfx/framework/tools/*
+!Middlewares/ST/touchgfx/framework/tools/imageconvert/
+Middlewares/ST/touchgfx/framework/tools/imageconvert/*
+!Middlewares/ST/touchgfx/framework/tools/imageconvert/build/
+Middlewares/ST/touchgfx/framework/tools/imageconvert/build/*
+!Middlewares/ST/touchgfx/framework/tools/imageconvert/build/win/
+Middlewares/ST/touchgfx/framework/tools/imageconvert/build/win/*
+!Middlewares/ST/touchgfx/framework/tools/imageconvert/build/win/imageconvert.out
+
+!Middlewares/ST/touchgfx/framework/tools/fontconvert/
+Middlewares/ST/touchgfx/framework/tools/fontconvert/*
+!Middlewares/ST/touchgfx/framework/tools/fontconvert/build/
+Middlewares/ST/touchgfx/framework/tools/fontconvert/build/*
+!Middlewares/ST/touchgfx/framework/tools/fontconvert/build/win/
+Middlewares/ST/touchgfx/framework/tools/fontconvert/build/win/*
+!Middlewares/ST/touchgfx/framework/tools/fontconvert/build/win/fontconvert.out
+
