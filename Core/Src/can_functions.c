@@ -323,7 +323,12 @@ static void can_100_procedure(const can_trx_t *msg)
 			buff[0] = 0;
 			can_send_msg(ID_FL_RESULT, 4, buff);
 
-			HAL_Delay(50);
+			for (uint16_t var = 0; var < 200; ++var)
+			{
+				wdt_clr();
+				handle_can();
+				HAL_Delay(1);
+			}
 			// set reboot function
 			JumptoApp();
 		}

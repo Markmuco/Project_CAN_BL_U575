@@ -1,0 +1,5 @@
+Gebruik PCAN-USB (CANable)
+
+python can_flash.py scan
+python can_flash.py flash 20260011
+python can_flash.py shell 20250011
