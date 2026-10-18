@@ -155,6 +155,7 @@ int main(void)
 	app_info_t *p_app_info = (app_info_t*) FLASH_APP_START_ADDR;
 //	app_info_t *p_shadow_info = (app_info_t*) FLASH_SHADOW_START_ADDR;
 	uint32_t *ram_key = (uint32_t*) RAM_KEY;
+	uint32_t *p_serial = (uint32_t*) RAM_SERIAL; // application fills the serial
 
   /* USER CODE END 1 */
 
@@ -197,34 +198,40 @@ int main(void)
 
 	FDCAN_Config();
 
-	if (*ram_key == WAIT_KEY)
+	if (*ram_key == CAN_KEY)
 	{
-		tty_puts("'JOZ' (@) 2026 STM32U JT_BL, Stop\r\n");
+		HAL_Delay(100);
+		can_send_msg(ID_OC_RES, 4, (uint8_t *) p_serial);
+	}
+	else if (*ram_key == WAIT_KEY)
+	{
+		tty_puts("'MT' (@) 2026 STM32U BL, Stop\r\n");
 		autostart_tmr = timer_get();
 		timer_start(autostart_tmr, 30000, NULL);
 	}
 	else if (*ram_key == CRASH_KEY)
 	{
-		tty_puts("'JOZ' (@) 2026 STM32U0 JT_BL, Crash\r\n");
+		tty_puts("'MT' (@) 2026 STM32U0 BL, Crash\r\n");
 		autostart_tmr = timer_get();
 		timer_start(autostart_tmr, 2500, NULL);
 	}
 	else if (p_app_info->key == APP_KEY)
 	{
-		tty_puts("'JOZ' (@) 2026 STM32U0 JT_BL, Start\r\n");
+		tty_puts("'MT' (@) 2026 STM32U0 BL, Start\r\n");
 		autostart_tmr = timer_get();
 		timer_start(autostart_tmr, 1500, NULL);
 	}
 	else
-		tty_puts("'JOZ' (@) 2026 STM32U0 JT_BL\r\n");
+		tty_puts("'MT' (@) 2026 STM32U0 BL\r\n");
 
 	// APP need to clear this flag or else app was crashed
 	*ram_key = CRASH_KEY;
 
 	app_info_t app_info;
+#if 0
 	app_info_t shadow_info;
 	app_info_t shadow_hdr;
-#if 0
+
 	if ((n25lpxx_read((uint8_t*) &shadow_hdr, N25LPXX_SHADOW_START_ADDR, sizeof(shadow_hdr)) == FLS_SUCCESS) && (shadow_hdr.key == APP_KEY))
 	{
 		// Verify integrity of shadow

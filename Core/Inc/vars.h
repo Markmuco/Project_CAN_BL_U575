@@ -30,6 +30,7 @@ typedef struct s_app_info
 #define WAIT_KEY2	(0x55AA55A2)
 
 #define CRASH_KEY 	(0x55AA55CC)
+#define CAN_KEY		(0x112255AA)	// RAM_KEY value: jump to the CAN bootloader
 
 #define RAM_KEY   	(0x20000000) // RAM address
 #define RAM_SERIAL	(0x20000004)

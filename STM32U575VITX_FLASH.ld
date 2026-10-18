@@ -43,7 +43,7 @@ _Min_Heap_Size = 0x200;	/* required amount of heap  */
 _Min_Stack_Size = 0x2400;	/* required amount of stack */
 
 /* Application: app_info header at 0x08010000, vector table (1Kb aligned for VTOR) behind it */
-_main_app_start_address = 0x08010400;
+_main_app_start_address = 0x08010200;
 
 /* Memories definition */
 MEMORY

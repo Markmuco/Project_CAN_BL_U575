@@ -184,6 +184,11 @@ void handle_can(void)
 {
 	can_trx_t msg;
 
+	// Bus-off recovery: the FDCAN sets INIT on bus-off and has no automatic recovery, clear it
+	// to start the recovery sequence (128 x 11 recessive bits)
+	if ((hfdcan1.Instance->PSR & FDCAN_PSR_BO) != 0U)
+		CLEAR_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+
 	while (can_rx_pop(&msg))
 	{
 		// Goto Special Functions. Poll and ..
@@ -318,10 +323,9 @@ static void can_100_procedure(const can_trx_t *msg)
 			buff[0] = 0;
 			can_send_msg(ID_FL_RESULT, 4, buff);
 
+			HAL_Delay(50);
 			// set reboot function
-			if (reboot_tmr == NO_TIMER)
-				reboot_tmr = timer_get();
-			timer_start(reboot_tmr, 200, JumptoApp);
+			JumptoApp();
 		}
 	}
 

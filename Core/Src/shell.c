@@ -821,8 +821,6 @@ static void sh_vi(char *param)
 	app_info_t *p_app_info = (app_info_t*) FLASH_APP_START_ADDR;
 	app_info_t shadow_info;
 
-	tty_puts("sci2 STM32 bootloader ");
-
 	tty_puts("STM32 bootloader ");
 	tty_puts(my_itoa((c_app_info.version >> 24) & 0xFF, buf, 16));
 	tty_puts(".");
