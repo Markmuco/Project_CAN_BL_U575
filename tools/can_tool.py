@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-can_flash.py - scan the CAN bus and flash a .bin via the CAN bootloader (PCAN-USB).
+can_tool.py - scan the CAN bus and flash a .bin via the CAN bootloader.
 
-Uses PCANBasic.dll directly (ctypes), nothing to install except the PEAK driver.
+Two ways to reach the bus, chosen in can_tool.ini (next to this file / the exe):
+  pcan = 1            PCAN-USB, uses PCANBasic.dll directly (ctypes), only the PEAK driver is needed
+  pcan = 0 + ip = ..  the Gateway as CAN interface over TCP (Project_Gateway/Src/eth2can.c)
+The module names / serial numbers are in the [devices] section of the same ini file.
+
 Protocol: Project_Gateway/inc/can_id.h, bootloader: Core/Src/can_functions.c
 
-  python can_flash.py scan
-  python can_flash.py flash 20260011 [--no-start]   (flashes 20260011.bin, always via the bootloader)
-  python can_flash.py shell 20260011                            (F4 closes the session)
+  can_tool scan
+  can_tool flash 20260011 [--no-start]   (flashes 20260011.bin, always via the bootloader)
+  can_tool shell 20260011                (F4 closes the session)
+  can_tool --ip 192.168.2.1 scan         (override the ini: use the gateway)
 
 The serial is hex, without 0x. For safety flash only accepts the file <serial>.bin
 in the current directory (or --dir), so the file name always says which module it is for.
@@ -17,8 +22,10 @@ The .bin must contain the app_info header with CRC (WriteCRC.exe after the build
 the bootloader checks it before it jumps to the application.
 """
 import argparse
+import configparser
 import ctypes
 import os
+import socket
 import struct
 import sys
 import time
@@ -56,7 +63,24 @@ class TPCANTimestamp(ctypes.Structure):
                 ("micros", ctypes.c_uint16)]
 
 
-class Pcan:
+class Bus:
+    """Common part of the interfaces: send(id, data), recv(timeout), flush(), close()."""
+
+    def wait_for(self, can_id, timeout, check=None):
+        """Wait for a frame with this id (and check(data) true), others are skipped."""
+        end = time.time() + timeout
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return None
+            fr = self.recv(left)
+            if fr is None:
+                return None
+            if fr[0] == can_id and (check is None or check(fr[1])):
+                return fr[1]
+
+
+class Pcan(Bus):
     def __init__(self, channel=PCAN_USBBUS1, baud=PCAN_BAUD_125K):
         self.dll = ctypes.WinDLL("PCANBasic.dll")
         self.ch = channel
@@ -99,18 +123,63 @@ class Pcan:
                 return None
             time.sleep(0.0005)
 
-    def wait_for(self, can_id, timeout, check=None):
-        """Wait for a frame with this id (and check(data) true), others are skipped."""
+
+# Gateway eth2can bridge (Project_Gateway/Src/eth2can.c): one fixed frame of 12 bytes both ways
+#   id (u16 LE), dlc (u8), flags (u8, bit0 = RTR), data (8 bytes)
+ETH2CAN_PORT = 5555
+ETH2CAN_FRAME = struct.Struct("<HBB8s")
+
+
+class NetBus(Bus):
+    def __init__(self, ip, port=ETH2CAN_PORT):
+        try:
+            self.sock = socket.create_connection((ip, port), timeout=3)
+        except OSError as e:
+            raise RuntimeError("cannot connect to the gateway %s:%d (%s)" % (ip, port, e))
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.buf = bytearray()
+
+    def close(self):
+        self.sock.close()
+
+    def flush(self):
+        """Drop everything that is already received."""
+        self.sock.settimeout(0)
+        try:
+            while self.sock.recv(4096):
+                pass
+        except (BlockingIOError, socket.timeout):
+            pass
+        self.buf.clear()
+
+    def send(self, can_id, data=b""):
+        try:
+            self.sock.settimeout(3)
+            self.sock.sendall(ETH2CAN_FRAME.pack(can_id, len(data), 0, bytes(data).ljust(8, b"\0")))
+        except OSError as e:
+            raise RuntimeError("gateway send failed (%s)" % e)
+
+    def recv(self, timeout):
+        """Next frame (id, bytes) or None after timeout (s)."""
         end = time.time() + timeout
         while True:
+            while len(self.buf) >= ETH2CAN_FRAME.size:
+                can_id, dlc, flags, data = ETH2CAN_FRAME.unpack_from(self.buf)
+                del self.buf[:ETH2CAN_FRAME.size]
+                if flags & 0x01 or dlc > 8:		# RTR: ignore
+                    continue
+                return can_id, data[:dlc]
             left = end - time.time()
-            if left <= 0:
+            try:
+                self.sock.settimeout(max(left, 0))
+                chunk = self.sock.recv(4096)
+            except (BlockingIOError, socket.timeout):
                 return None
-            fr = self.recv(left)
-            if fr is None:
-                return None
-            if fr[0] == can_id and (check is None or check(fr[1])):
-                return fr[1]
+            except OSError as e:
+                raise RuntimeError("gateway connection lost (%s)" % e)
+            if not chunk:
+                raise RuntimeError("gateway closed the connection")
+            self.buf += chunk
 
 
 def parse_serial(text):
@@ -125,35 +194,93 @@ def ser_bytes(serial):
     return struct.pack("<I", serial)
 
 
-# serial numbers of the known nodes, Project_Gateway/Inc/vars.h
-KNOWN = {
-    0x20180010: "Garage", 0x20180020: "Gateway", 0x20180066: "Test gateway",
-    0x20190031: "Heliostaat", 0x20210010: "EV",
-    0x20230010: "Trapled", 0x20230011: "WTW",
-    0x20250010: "Enviorment", 0x20250011: "Powerwall", 0x20250012: "Velux",
-    0x20260010: "TFT BG", 0x20260011: "TFT 1E",
-    0xD9120300: "LCD BG", 0xD8120300: "LCD up", 0xD7120300: "Klok",
-}
+# ---- configuration: can_tool.ini -------------------------------------------------------------
+DEFAULT_INI = """\
+; can_tool.ini
+[interface]
+; 1 = PCAN-USB, 0 = use the gateway (ip below) as CAN interface
+pcan = 1
+ip = 192.168.2.1
+port = %d
+
+[devices]
+; serial (hex) = name
+20180010 = Garage
+20180020 = Gateway
+20180066 = Test gateway
+20190031 = Heliostaat
+20210010 = EV
+20230010 = Trapled
+20230011 = WTW
+20250010 = Enviorment
+20250011 = Powerwall
+20250012 = Velux
+20260010 = TFT BG
+20260011 = TFT 1E
+D9120300 = LCD BG
+D8120300 = LCD up
+D7120300 = Klok
+""" % ETH2CAN_PORT
+
+
+def ini_path():
+    """can_tool.ini next to the exe (frozen) or next to this script."""
+    base = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    return os.path.join(base, "can_tool.ini")
+
+
+def load_config():
+    """(settings, known devices). The ini is created with the defaults when it does not exist."""
+    path = ini_path()
+    if not os.path.exists(path):
+        with open(path, "w", newline="") as f:
+            f.write(DEFAULT_INI.replace("\n", "\r\n"))
+        print("[created %s]" % path)
+    cp = configparser.ConfigParser(inline_comment_prefixes=(";",))
+    try:
+        cp.read(path)
+        known = {}
+        for key, name in cp.items("devices"):
+            known[int(key, 16)] = name
+        iface = cp["interface"]
+        cfg = {"pcan": iface.getboolean("pcan", True), "ip": iface.get("ip", "").strip(),
+               "port": iface.getint("port", ETH2CAN_PORT)}
+    except (configparser.Error, ValueError, KeyError) as e:
+        raise RuntimeError("%s is not valid (%s)" % (path, e))
+    return cfg, known
+
+
+KNOWN = {}		# filled from the ini in main()
 
 
 def cmd_scan(bus, args):
-    # like the gateway 'canpoll': collect the answers for 2 s, poll twice (slow nodes)
+    # All nodes answer a poll at the same moment with the same id, so answers collide on the bus and
+    # only part of them gets through per poll. Poll repeatedly and collect over the whole window.
     bus.flush()
     found = set()
+    seen = {}		# frames per id (-v), shows whether the answers reach the PC at all
     start = time.time()
-    polls = [0.0, 1.0]
+    polls = [i * args.interval for i in range(args.polls)]
     while time.time() - start < args.window:
         if polls and time.time() - start >= polls[0]:
             polls.pop(0)
             bus.send(ID_POLL)
         fr = bus.recv(0.05)
-        if fr and fr[0] == ID_POLL_RPY and len(fr[1]) == 4:
-            found.add(struct.unpack("<I", fr[1])[0])
+        if fr:
+            seen[fr[0]] = seen.get(fr[0], 0) + 1
+        # like the gateway (store_module): the serial is in the first 4 bytes, the old Microchip modules
+        # (D...) answer with more than 4 bytes
+        if fr and fr[0] == ID_POLL_RPY and len(fr[1]) >= 4:
+            found.add(struct.unpack("<I", fr[1][:4])[0])
+        elif fr and fr[0] == ID_POLL_RPY:
+            print("poll answer with only %d data bytes: %s" % (len(fr[1]), fr[1].hex()))
     for s in sorted(found):
         print("%08X %-3s %s" % (s, "ok" if s in KNOWN else "?", KNOWN.get(s, "?????")))
     for s, name in KNOWN.items():
         if s not in found:
             print("%08X ERR %s" % (s, name))
+    if args.verbose:
+        print("frames received per id: " + ", ".join("%d:%d" % kv for kv in sorted(seen.items())))
     return 0 if found else 1
 
 
@@ -310,9 +437,13 @@ def cmd_shell(bus, args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--channel", type=lambda x: int(x, 0), default=PCAN_USBBUS1, help="PCAN channel (default 0x51 = USBBUS1)")
+    ap.add_argument("--ip", help="use the gateway at this IP as CAN interface (overrides pcan in the ini)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sc = sub.add_parser("scan", help="poll the bus and list the serial numbers")
-    sc.add_argument("--window", type=float, default=2.5, help="seconds to collect answers (default 2.5)")
+    sc.add_argument("--window", type=float, default=4.0, help="seconds to collect answers (default 4)")
+    sc.add_argument("--polls", type=int, default=6, help="number of polls (default 6)")
+    sc.add_argument("-v", "--verbose", action="store_true", help="also show how many frames per CAN id were received")
+    sc.add_argument("--interval", type=float, default=0.5, help="seconds between polls (default 0.5)")
     fl = sub.add_parser("flash", help="flash a .bin")
     fl.add_argument("serial", help="module number (hex), e.g. 20260011; flashes <serial>.bin")
     fl.add_argument("--dir", default=".", help="directory with the .bin file (default: current)")
@@ -322,7 +453,17 @@ def main():
     args = ap.parse_args()
 
     try:
-        bus = Pcan(args.channel)
+        cfg, known = load_config()
+        KNOWN.update(known)
+        if args.ip or not cfg["pcan"]:
+            ip = args.ip or cfg["ip"]
+            if not ip:
+                raise RuntimeError("pcan = 0 but no ip in can_tool.ini")
+            print("[interface: gateway %s:%d]" % (ip, cfg["port"]))
+            bus = NetBus(ip, cfg["port"])
+        else:
+            print("[interface: PCAN-USB]")
+            bus = Pcan(args.channel)
     except (OSError, RuntimeError) as e:
         print("ERROR:", e)
         return 2

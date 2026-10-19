@@ -1,5 +1,20 @@
-Gebruik PCAN-USB (CANable)
+can_tool - CAN scan / flash / shell
 
-python can_flash.py scan
-python can_flash.py flash 20260011
-python can_flash.py shell 20250011
+  can_tool scan                      (polls 6x in 4 s, lists the modules with their name from the ini)
+  can_tool scan --polls 1 --window 2 -v   (like 'canpoll' of the gateway, -v = frames per CAN id)
+  can_tool flash 20260011            (flashes 20260011.bin from the current directory)
+  can_tool shell 20260011            (F4 closes)
+  can_tool --ip 192.168.2.1 scan     (use the gateway instead of the PCAN-USB, for this run)
+
+Settings in can_tool.ini (next to can_tool.exe, created with defaults when missing):
+  [interface]  pcan = 1 -> PCAN-USB (needs the PEAK driver)
+               pcan = 0 -> the Gateway is the CAN interface: ip = 192.168.2.1, TCP port 5555
+  [devices]    serial (hex) = name, used by scan
+
+Notes
+  - scan: ok = known module, ? = answered but not in the ini, ERR = in the ini but did not answer.
+  - The D... modules (old Microchip) answer a poll with more than 4 data bytes, the serial is in the first 4.
+    They can be scanned, flashing them is not done by this tool.
+  - Gateway side: Project_Gateway/Src/eth2can.c (frame format in Inc/eth2can.h). The gateway console prints
+    'eth2can closed, frames to PC N, lost M' when the tool disconnects.
+  - Build the exe: python -m PyInstaller --onefile --name can_tool can_tool.py
