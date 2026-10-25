@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-can_tool.py - scan the CAN bus and flash a .bin via the CAN bootloader.
+can_tool.py - scan the CAN bus, flash a .bin via the CAN bootloader, shell and file download.
 
 Two ways to reach the bus, chosen in can_tool.ini (next to this file / the exe):
   pcan = 1            PCAN-USB, uses PCANBasic.dll directly (ctypes), only the PEAK driver is needed
@@ -12,6 +12,7 @@ Protocol: Project_Gateway/inc/can_id.h, bootloader: Core/Src/can_functions.c
   can_tool scan
   can_tool flash 20260011 [--no-start]   (flashes 20260011.bin, always via the bootloader)
   can_tool shell 20260011                (F4 closes the session)
+  can_tool download 20250012 "log 1-2026.txt"   (type the SD card file over the CAN shell, saved under the same name)
   can_tool --ip 192.168.2.1 scan         (override the ini: use the gateway)
 
 The serial is hex, without 0x. For safety flash only accepts the file <serial>.bin
@@ -434,6 +435,92 @@ def cmd_shell(bus, args):
     return 0
 
 
+def collect(bus, quiet, first_wait, stop=None):
+    """Collect ID_SH_TX data until nothing came for `quiet` s (first_wait s for the first byte),
+    or until stop(data) is true. Returns bytes."""
+    data = bytearray()
+    last = time.time()
+    limit = first_wait
+    while True:
+        fr = bus.recv(0.05)
+        if fr is not None and fr[0] == ID_SH_TX:
+            data += fr[1]
+            last = time.time()
+            limit = quiet
+            if stop is not None and stop(bytes(data)):
+                break
+        elif time.time() - last > limit:
+            break
+    return bytes(data)
+
+
+CR, LF, CRLF = b"\r", b"\n", b"\r\n"
+
+
+def cmd_download(bus, args):
+    serial = parse_serial(args.serial)
+    sb = ser_bytes(serial)
+    filename = " ".join(args.file)
+
+    bus.flush()
+    bus.send(ID_SH_OPEN, sb)
+    expect(bus.wait_for(ID_SH_RES, 2.0, lambda d: d == sb), "open shell")
+    try:
+        # An Enter must give a reaction (normally the prompt). The text after the last line
+        # feed is taken as the prompt, it is removed from the end of the file again.
+        bus.send(ID_SH_RX, CR)
+        reaction = collect(bus, 0.3, 3.0)
+        if not reaction:
+            raise RuntimeError("no reaction of the shell on Enter (is module %08X a shell module?)" % serial)
+        prompt = reaction.rsplit(LF, 1)[-1] if LF in reaction else b""
+        if args.verbose:
+            print("prompt %r" % prompt)
+
+        # type "<filename>" over the CAN shell, 8 bytes per frame
+        cmd = b"type " + filename.encode("cp1252", errors="replace") + CR
+        for i in range(0, len(cmd), 8):
+            bus.send(ID_SH_RX, cmd[i:i + 8])
+            time.sleep(0.002)
+
+        header = b"Read SD card file ["
+
+        def done(d):
+            # finished when the prompt is back after the header (or the error line)
+            h = d.find(header)
+            return bool(prompt) and h >= 0 and d.endswith(prompt) and d.find(b"]" + CRLF, h) >= 0
+
+        print("Reading %s ..." % filename)
+        data = collect(bus, 3.0, 8.0, done)
+        if args.verbose:
+            print("received %d bytes, start %r end %r" % (len(data), data[:80], data[-40:]))
+    finally:
+        bus.send(ID_SH_CLOSE, sb)
+        bus.wait_for(ID_SH_RES, 1.0, lambda d: d == sb)
+
+    h = data.find(header)
+    if h < 0:
+        raise RuntimeError("no answer of the shell on 'type' (received %d bytes)" % len(data))
+    h_end = data.find(b"]" + CRLF, h)
+    if h_end < 0:
+        raise RuntimeError("incomplete answer of the shell")
+    body = data[h_end + 3:]
+    if prompt and body.endswith(prompt):
+        body = body[:-len(prompt)]
+
+    if body.startswith(b"Error open file"):
+        print(data[h:h_end + 3].decode("cp1252", errors="replace").rstrip())
+        print(body.decode("cp1252", errors="replace").rstrip())
+        return 1
+
+    target = os.path.join(args.dir, os.path.basename(filename))
+    if os.path.exists(target):
+        print("[overwriting %s]" % target)
+    with open(target, "wb") as f:
+        f.write(body)
+    print("Saved %s (%d bytes)" % (target, len(body)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--channel", type=lambda x: int(x, 0), default=PCAN_USBBUS1, help="PCAN channel (default 0x51 = USBBUS1)")
@@ -450,6 +537,11 @@ def main():
     fl.add_argument("--no-start", action="store_true", help="do not start the application afterwards")
     sh = sub.add_parser("shell", help="take over the UART shell of a node (F4 closes)")
     sh.add_argument("serial", help="module number (hex), e.g. 20250011")
+    dl = sub.add_parser("download", help="download a file from the SD card of a module (type over the CAN shell)")
+    dl.add_argument("serial", help="module number (hex), e.g. 20250012")
+    dl.add_argument("file", nargs="+", help="file name on the SD card (spaces are allowed, quotes optional)")
+    dl.add_argument("--dir", default=".", help="directory to save the file in (default: current)")
+    dl.add_argument("-v", "--verbose", action="store_true", help="show the prompt and the start / end of the received data")
     args = ap.parse_args()
 
     try:
@@ -468,7 +560,7 @@ def main():
         print("ERROR:", e)
         return 2
     try:
-        return {"scan": cmd_scan, "flash": cmd_flash, "shell": cmd_shell}[args.cmd](bus, args)
+        return {"scan": cmd_scan, "flash": cmd_flash, "shell": cmd_shell, "download": cmd_download}[args.cmd](bus, args)
     except RuntimeError as e:
         print("\nERROR:", e)
         return 1

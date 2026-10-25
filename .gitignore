@@ -6,6 +6,11 @@ build/
 Debug/
 Release/
 
+# log files
+/tools/*.csv
+/tools/*.txt
+/tools/*.html
+
 # Prerequisites
 *.d
 
